@@ -1,0 +1,1079 @@
+---
+title: "HMSC_2022"
+author: "Adrian Barrero"
+date: "25 de enero de 2022"
+output: html_document
+---
+
+## INDEX 
+1. Loading the required R-packages
+2. Loading and exploring the data
+3. Setting model structure and fitting the model
+4. Examining MCMC convergence
+5. Evaluating model fit
+6. Exploring parameter estimates
+
+### 1. Loading the required R-packages
+
+Load the neccesary libraries:
+```{r}
+library(BayesLogit)
+library(coda)
+library(parallel)
+library(corrplot)
+library(ggplot2)
+library(cowplot)
+library(ggrepel)
+library(ggforce)
+library(gridExtra)
+
+# Servidor de Helsinki, donde no tengo permisos de administrador
+#install.packages("Hmsc", lib= "//ad.helsinki.fi/home/g/gomezjul/Desktop")
+#library("Hmsc", lib= "C:/Users/gomezjul/AppData/Local/Temp/5/RtmpSGQHAj/downloaded_packages")
+
+library(Hmsc)
+```
+
+
+### 2. Loading and exploring the data
+
+Load data:
+```{r}
+setwd("E:/ORDENADOR_UAM_2019/Clasificacion_ArcMap_Arb/1.Data/LastData")
+library (readxl)
+Data <- read_excel("Data2.xlsx")
+Grid <- read_excel("Grid.xlsx")
+
+```
+
+
+
+Data structure:
+```{r}
+StudyDesign <- data.frame(Plot= as.factor(Data$Plot), Grid= as.factor(Data$Grid), Year= as.factor(Data$Year))
+
+X <- data.frame(Data[,4:15])
+Y <- as.matrix(Data[,16:26]) # 11 Species
+xycoords <- as.matrix(Grid[,3:4]) # XY Coordinates per cell
+colnames(xycoords) = c("x-coordinate","y-coordinate")
+rownames(xycoords) = Grid$Grid
+head(xycoords)
+```
+
+Let's transform those variables which distribution is skewed left. This will ease to detect linear effects:
+```{r}
+X$Shrub <- log(X$Shrub + 1)
+X$BNDVI <- log(X$BNDVI + 1)
+X$Trees <- log(X$Trees + 1)
+X$BareGround <- log(X$BareGround + 1)
+X$Scrub20 <- log(X$Scrub20 + 1)
+X$Walls <- log(X$Walls + 1)
+X$Rocks20 <- log(X$Rocks20 + 1)
+X$Cereal <- log(X$Cereal + 1)
+X$Herbaceus <- log(X$Herbaceus + 1)
+X$Rocks5 <- log(X$Rocks5 + 1)
+X$Scrub5 <- log(X$Scrub5 + 1)
+```
+
+Standardise all variables:
+```{r}
+X$Year <- as.factor(X$Year)
+X$Shrub <- as.vector(scale(X$Shrub))
+X$BNDVI <- as.vector(scale(X$BNDVI))
+X$Trees <- as.vector(scale(X$Trees))
+X$BareGround <- as.vector(scale(X$BareGround))
+X$Scrub20 <- as.vector(scale(X$Scrub20))
+X$Walls <- as.vector(scale(X$Walls))
+X$Rocks20 <- as.vector(scale(X$Rocks20))
+X$Cereal <- as.vector(scale(X$Cereal))
+X$Herbaceus <- as.vector(scale(X$Herbaceus))
+X$Rocks5 <- as.vector(scale(X$Rocks5))
+X$Scrub5 <- as.vector(scale(X$Scrub5))
+```
+
+
+### 3. Setting model structure and fitting the model
+
+```{r}
+Ypois <- Y
+Yprobit <- ifelse (Ypois > 0, 1, 0) # no use to pisson distribution
+```
+
+We describe the random effects
+```{r}
+# rL.Year = HmscRandomLevel(units= levels(StudyDesign$Year)) # Year
+rL.plot = HmscRandomLevel(units= levels(StudyDesign$Plot)) # Plot
+# rL.Grid = HmscRandomLevel(units= levels(StudyDesign$Grid)) # Grid
+rL.nngp = HmscRandomLevel(sData = xycoords, sMethod = 'NNGP', nNeighbours = 10) # XY coordinates (grid)
+```
+
+We describe the structure of the fixes effects
+```{r}
+# Model with covariates
+XFormula.full = ~ Year + BNDVI + Walls + Rocks20 + Rocks5 + BareGround + Scrub5 + Scrub20 + Herbaceus + Shrub + Trees + Cereal
+```
+
+Fit the model:
+```{r}
+m = Hmsc(Y= Yprobit, XData= X, XFormula= XFormula.null, studyDesign= StudyDesign, ranLevels= list("Grid"= rL.nngp, "Plot"= rL.plot), distr= "probit")
+
+localDir = "."
+model.directory = file.path(localDir, "models_20210331_null")
+```
+
+#Only first time
+```{r}
+nChains = 2
+samples = 100
+for (thin in c(1,10,100,1000)){
+   transient = 50*thin
+   m = sampleMcmc(m, thin = thin, samples = samples, transient = transient, nChains = nChains, updater=list(GammaEta=FALSE))
+   filename=file.path(model.directory, paste0("model_pa_chains_",as.character(nChains),"_samples_",as.character(samples),"_thin_",as.character(thin)))
+   save(m, file=filename)
+}
+
+```
+
+### 4. Examining MCMC convergence
+
+We Load two objects with thin 1 and thin 10 to see differences on MCMC convergence. We expect that the model with thin=10 will show bette convergence diagnosis. 
+
+These are the results for thin=1:
+```{r}
+# <- /O2
+load(file = "E:/ORDENADOR_UAM_2019/Clasificacion_ArcMap_Arb/1.Data/LastData/ModelsO2_21092021/FullModel_pa_chains_4_samples_250_thin_100")
+
+# The mode is the object m
+mpost.full = convertToCodaObject(m) # Convert to CODA object
+plot(mpost.full$Beta[,3])
+```
+
+These are the results for thin=10:
+```{r}
+
+```
+
+We keep working with the model with thin=10.
+Effective sample size:
+```{r}
+ess.beta = effectiveSize(mpost.full$Beta)
+hist(ess.beta, xlab = expression("Effective sample size" ~ beta ~ ""))
+
+# Ques es lo siguiente:
+ess.V = effectiveSize(mpost.full$V)
+hist(ess.V, xlab = "Effective sample size V")
+```
+
+Gelman diagnosis (Error message):
+```{r}
+# psrf.beta = gelman.diag(mpost.full$Beta,multivariate=FALSE)$psrf
+# hist(psrf.beta, xlab = expression("Potential scale reduction factor" ~ beta ~ ""))
+# 
+# psrf.V = gelman.diag(mpost.full$V,multivariate=FALSE)$psrf
+# hist(psrf.V, xlab = "Potential scale reduction factor V")
+# 
+# psrf.alpha = gelman.diag(mpost.full$Alpha[[1]],multivariate = FALSE)$psrf
+# hist(psrf.alpha, xlab = "Potential scale reduction factor V")
+```
+
+### 5. Evaluating model fit
+
+Explanatory power:
+```{r}
+preds = computePredictedValues(m, expected= FALSE)
+MF.nngp = evaluateModelFit(hM= m, predY= preds)
+MF.nngp
+```
+
+Species behind each TjurR2 resut:
+```{r}
+names(Data[16:26])
+```
+
+Mean	 values	 over	 the	 species can	 be	 used	 as	 an	overall	summary	of	the	model’s	explanatory power:
+```{r}
+mean(MF.nngp$TjurR2)*100
+```
+
+
+Predictive power at the Grid level:
+
+To apply cross-validation, we first assign the samples randomly into a number of groups (“folds”).
+For example, we may apply two-fold cross-validation across the samples:
+```{r}
+partition = createPartition(m, nfolds = 2, column = "Grid")
+```
+
+The idea behind cross-validation is that when making predictions for a particular fold, data from the focal fold is not used for parameter estimation. This is to avoid the possibility of obtaining an overly optimistic assessment of the model’s predictive power because of overfitting. Model fitting and predictions are first made separately for each fold, after which the predictions are combined to provide one matrix of predictions for all sampling units. We next make model predictions according to this partition, and use the model predictions to compute a predictive 𝑅2.
+
+```{r}
+# preds = computePredictedValues(m, partition=partition, updater=list(GammaEta=FALSE)) 
+# cvMF.nngp = evaluateModelFit(hM= m, predY= preds)
+# cvMF.nngp
+```
+
+While it is difficult to predict which species are present or absent on a particular tree, more predictable patterns emerge at the level of the forest site:
+
+Predictive power at the PLOT level:
+```{r}
+# partition = createPartition(m, nfolds = 2, column = "Plot")
+# preds = computePredictedValues(m, partition=partition, updater=list(GammaEta=FALSE)) 
+# cvMF.plot = evaluateModelFit(hM= m, predY= preds)
+# cvMF.plot
+```
+
+
+### 6. Exploring parameter estimates
+
+**Model Parameters**
+```{r}
+summary(mpost.full$Beta)
+```
+
+Plot beta parameters for each species
+```{r fig.width= 10}
+# grDevices::colors()# available colours
+par(mar=c(11,14,0,0))
+
+spNames= c("Dupont's lark", "Common skylark", "Greater short-toed lark", "Tawny pipit", "Black-eared wheatear", "Northern wheatear", "Thekla lark", "Calandra lark", "Woodlark", "Rock sparrow", "Common stonechat")
+m$spNames <- spNames
+
+covNames <- c("Intercept", "Year 2018", "BNDVI", "Walls", "Rocks", "Stony ground", "Bare ground", "Short scrub", "Medium scrub", "Herbaceous", "Tall scrub", "Trees and shrubs", "Cereal")
+m$covNames <- covNames
+
+postbeta = getPostEstimate(m, parName="Beta")
+plotBeta(m, post = postbeta, mar= c(11,10,0,0), supportLevel = 0.94, spNamesNumbers = c(TRUE, FALSE), covNamesNumbers= c(TRUE, FALSE), 
+          colors = colorRampPalette(c("lightblue2", "white", "yellow")),  cex = c(1.4, 1.4, 1.4), mgp = c(0, 3, 0))
+```
+
+
+
+fonts:
+```{r}
+# install.packages("extrafont")
+library(extrafont)
+
+# Importa todos los archivos .ttf de tu sistema
+# Tendrás que ejecutar esto una vez, pero tardará unos minutos en acabar
+font_import()
+loadfonts(device = "win")
+
+# Muestra la lista completa
+# fonts()
+
+# Solo las seis primeras fuentes
+head(fonts())
+windowsFonts()
+```  
+
+Change the font and the caption:
+```{r, fig.width= 10}
+# grDevices::colors()# available colours
+par(mar=c(10,14,0,0), family= 'serif') # change the font type
+
+spNames= c("Dupont's lark", "Common skylark", "Greater short-toed lark", "Tawny pipit", "Black-eared wheatear", "Northern wheatear", "Thekla lark", "Calandra lark", "Woodlark", "Rock sparrow", "Common stonechat")
+m$spNames <- spNames
+
+covNames <- c("Intercept", "Year 2018", "BNDVI", "Walls", "Rocks", "Stony ground", "Bare ground", "Short scrub", "Medium scrub", "Herbaceous", "Tall scrub", "Trees and shrubs", "Cereal")
+m$covNames <- covNames
+
+postbeta = getPostEstimate(m, parName="Beta")
+plotBeta(m, post = postbeta, mar= c(10,14,0,0), supportLevel = 0.89, spNamesNumbers = c(TRUE, FALSE), covNamesNumbers= c(TRUE, FALSE), colorLevels = 100000, colors = colorRampPalette(c("lightblue2", "white", "yellow")),  cex = c(1.4, 1.4, 1.4), mgp = c(0, 3, 0), param= "Support")
+```
+
+
+
+
+Exploring parameter estimates. This graph shows those β parameters (species responses to environmental covariates) with at least 95% posterior probability of being positive (red) or negative (blue) in model the model. 
+
+
+**Spatial signal**
+
+Is there spatial signal?
+```{r}
+summary(mpost.full$Alpha[[2]]) # Plot
+```
+
+It is interesting to look at these results on the null model (without environmentale covariates but incorporating the spatial random effect). The posterior distribution of the alpha parameter shows the mean estimate (distance) of the spatial scale alpha related to the leading latent variable.
+
+**SPECIES-TO-SPECIES ASSOCIATIONS**
+
+Species associations at the Plot level
+```{r, fig.width= 10}
+par(mar=c(0,0,0,0), family= 'serif')
+
+spNames= c("Dupont's lark", "Common skylark", "Greater short-toed lark", "Tawny pipit", "Black-eared wheatear", "Northern wheatear", "Thekla lark", "Calandra lark", "Woodlark", "Rock sparrow", "Common stonechat")
+m$spNames <- spNames
+
+OmegaCor = computeAssociations(m)
+supportLevel = 0.95
+toPlot = ((OmegaCor[[2]]$support>supportLevel)
+          + (OmegaCor[[2]]$support<(1-supportLevel))>0)*OmegaCor[[2]]$mean # change OmegaCor to [[1]] to obtain the association matrix at the grid level 
+
+corrplot(toPlot, method = "color",
+         col = colorRampPalette(c("lightblue2","white","forestgreen"))(200),
+         # title = paste("random effect level:", m$rLNames[2]), 
+         mar=c(0,0,1,0),
+         diag= FALSE, tl.cex= 1.5, cl.cex= 1.25, tl.col= "black", cl.ratio= 0.35, cl.length= 5
+         )
+
+```
+
+Species associations at the Grid level
+```{r}
+OmegaCor = computeAssociations(m)
+supportLevel = 0.95
+toPlot = ((OmegaCor[[1]]$support>supportLevel)
+          + (OmegaCor[[1]]$support<(1-supportLevel))>0)*OmegaCor[[1]]$mean
+
+corrplot(toPlot, method = "color",
+         col = colorRampPalette(c("blue","white","red"))(200),
+         title = paste("random effect level:", m$rLNames[1]), mar=c(0,0,1,0))
+```
+
+These graphs illustrate the residual association structure at the grid (a) and plot (b) level. Positive associations with high (at least 95% posterior probability) statistical support are shown in red and negative associations in blue.
+
+Another way to visualize the responses of the species to the latent variables is to construct a biplot, as
+commonly done in ordination analyses. First, we fit the model without any covariates, and the number of
+latent factors constrained to 2.
+
+```{r, fig.height= 10}
+rL.nngp$nfMin=2
+rL.nngp$nfMax=2
+
+nChains = 2
+test.run = FALSE
+
+if (test.run){
+#with this option, the vignette runs fast but results are not reliable
+thin = 1
+samples = 10
+transient = 5
+verbose = 0
+} else {
+#with this option, the vignette evaluates slow but it reproduces the results of the
+#.pdf version
+thin = 10
+samples = 1000
+transient = 500*thin
+verbose = 0
+}
+
+XFormula.null <- ~ 1 + Year
+
+m = Hmsc(Y= Y, XData= X, XFormula= XFormula.null, studyDesign= StudyDesign, ranLevels= list("Grid"= rL.nngp, "Plot"= rL.plot), distr= "probit")
+m = sampleMcmc(m, thin = thin, samples = samples, transient = transient, nChains = nChains, verbose = verbose, updater=list(GammaEta=FALSE))
+```   
+
+Obtain posterior distributions Beta:
+```{r}
+load(file = "models202104/models_20210331_null/model_pa_chains_2_samples_100_thin_10.dat")
+null.model <- m
+
+length(null.model$postList) # 2 chains
+length(null.model$postList[[1]]) # 100 samples per chain
+
+post= poolMcmcChains(null.model$postList)
+length(post) # 200 in total
+
+names(post[[1]])
+
+# Beta parameters
+dim(post[[1]]$Beta) # covariates vs species
+colnames(null.model$X)
+
+Lambda1 <- matrix(NA, nrow= 3, ncol= 11) # Latent variable 1
+Lambda2 <- matrix(NA, nrow= 3, ncol= 11) # Latent variable 2
+
+for(i in 1:length(null.model$spNames)){
+  for(j in 1:2){
+  getvalue = function(p){return(p$Lambda[[2]][j,i])}
+  if(j== 1){
+    Lambda1[1,i] <- mean(unlist(lapply(X = post, FUN = getvalue)))
+    Lambda1[2,i] <- as.numeric(quantile(unlist(lapply(X = post, FUN = getvalue)), probs= 0.025))
+    Lambda1[3,i] <- as.numeric(quantile(unlist(lapply(X = post, FUN = getvalue)), probs= 0.975))
+  }
+  if(j== 2){
+    Lambda2[1,i] <- mean(unlist(lapply(X = post, FUN = getvalue)))
+    Lambda2[2,i] <- as.numeric(quantile(unlist(lapply(X = post, FUN = getvalue)), 0.025))
+    Lambda2[3,i] <- as.numeric(quantile(unlist(lapply(X = post, FUN = getvalue)), 0.975))
+  }
+  }
+}
+
+Lambda1 <- data.frame(t(Lambda1))
+Lambda2 <- data.frame(t(Lambda2))
+Lambdas_Df1 <- cbind(Lambda1,Lambda2)
+
+colnames(Lambdas_Df1) <- c("Xmean", "XQuant025", "XQuant975", "Ymean", "YQuant025", "YQuant975")
+spNames= c("Dupont's lark", "Common skylark", "Greater short-toed lark", "Tawny pipit", "Black-eared wheatear", "Northern wheatear", "Thekla lark", "Calandra lark", "Woodlark", "Rock sparrow", "Common stonechat")
+row.names(Lambdas_Df1) <- spNames
+Lambdas_Df1
+Lambdas_Df1$Sp <- spNames
+
+```   
+
+
+We prepare also the data with all the posterior distributions:
+```{r}
+Lambda1 <- matrix(NA, nrow= 200, ncol= 11) # Latent variable 1
+Lambda2 <- matrix(NA, nrow= 200, ncol= 11) # Latent variable 2
+
+for(i in 1:length(null.model$spNames)){
+  for(j in 1:2){
+  getvalue = function(p){return(p$Lambda[[2]][j,i])}
+  if(j== 1){
+    Lambda1[,i] <- unlist(lapply(X = post, FUN = getvalue))
+  }
+  if(j== 2){
+    Lambda2[,i] <- unlist(lapply(X = post, FUN = getvalue))
+  }
+  }
+}
+
+Lambda1 <- data.frame(Lambda1)
+spNames= c("Dupont's lark", "Common skylark", "Greater short-toed lark", "Tawny pipit", "Black-eared wheatear", "Northern wheatear", "Thekla lark", "Calandra lark", "Woodlark", "Rock sparrow", "Common stonechat")
+colnames(Lambda1) <- spNames
+Lambda <- c(Lambda1$`Dupont's lark`, Lambda1$`Common skylark`, Lambda1$`Greater short-toed lark`, Lambda1$`Tawny pipit`, Lambda1$`Black-eared wheatear`,
+                 Lambda1$`Northern wheatear`, Lambda1$`Thekla lark`, Lambda1$`Calandra lark`, Lambda1$`Woodlark`, Lambda1$`Rock sparrow`, Lambda1$`Common stonechat`)
+
+Lambda1 <- matrix(NA, ncol= 2, nrow= 200*11)
+Lambda1[,1] <- Lambda
+Lambda1[,2] <- rep(spNames, each= 200)
+Lambda1 <- data.frame(Lambda1)
+colnames(Lambda1) <- c("X", "Sp")
+
+Lambda2 <- data.frame(Lambda2)
+colnames(Lambda2) <- spNames
+Lambda <- c(Lambda2$`Dupont's lark`, Lambda2$`Common skylark`, Lambda2$`Greater short-toed lark`, Lambda2$`Tawny pipit`, Lambda2$`Black-eared wheatear`,
+                 Lambda2$`Northern wheatear`, Lambda2$`Thekla lark`, Lambda2$`Calandra lark`, Lambda2$`Woodlark`, Lambda2$`Rock sparrow`, Lambda2$`Common stonechat`)
+Lambda2 <- matrix(NA, ncol= 1, nrow= 200*11)
+Lambda2[,1] <- Lambda
+Lambda2 <- data.frame(Lambda2)
+colnames(Lambda2) <- c("Y")
+
+Lambdas_Df2 <- cbind(Lambda1, Lambda2)
+str(Lambdas_Df2)
+Lambdas_Df2$Sp <- as.factor(Lambdas_Df2$Sp)
+Lambdas_Df2$X <- as.numeric(Lambdas_Df2$X)
+```
+
+Colours available:
+```{r}
+grDevices::colors()# available colours
+```
+
+
+Null model plot:
+```{r, fig.height= 40, fig.width= 40}
+etaPost.null <- getPostEstimate(null.model, "Eta", thin= 10)
+lambdaPost.null <- getPostEstimate(null.model, "Lambda", r=2, thin= 10)
+plotorder.null <- 1:nrow(null.model$XData)
+factors.null <- c(1,2)
+
+SPLimits <- matrix(NA, ncol= 3, nrow= 11)
+SPLimits[1,] <- c(Lambdas_Df1$Xmean[Lambdas_Df1$Sp == "Dupont's lark"], Lambdas_Df1$YQuant975[Lambdas_Df1$Sp == "Dupont's lark"], "Dupont's lark")
+SPLimits[2,] <- c(Lambdas_Df1$Xmean[Lambdas_Df1$Sp == "Common skylark"], Lambdas_Df1$YQuant975[Lambdas_Df1$Sp == "Common skylark"], "Common skylark")
+SPLimits[3,] <- c(Lambdas_Df1$Xmean[Lambdas_Df1$Sp == "Woodlark"], Lambdas_Df1$YQuant025[Lambdas_Df1$Sp == "Woodlark"], "Woodlark")
+SPLimits[4,] <- c(Lambdas_Df1$Xmean[Lambdas_Df1$Sp == "Calandra lark"], Lambdas_Df1$YQuant025[Lambdas_Df1$Sp == "Calandra lark"], "Calandra lark")
+SPLimits[5,] <- c(Lambdas_Df1$Xmean[Lambdas_Df1$Sp == "Black-eared wheatear"], Lambdas_Df1$YQuant025[Lambdas_Df1$Sp == "Black-eared wheatear"], "Black-eared wheatear")
+SPLimits[6,] <- c(Lambdas_Df1$XQuant025[Lambdas_Df1$Sp == "Greater short-toed lark"], Lambdas_Df1$Ymean[Lambdas_Df1$Sp == "Greater short-toed lark"], "Greater short-toed lark")
+SPLimits[7,] <- c(Lambdas_Df1$Xmean[Lambdas_Df1$Sp == "Thekla lark"], Lambdas_Df1$YQuant975[Lambdas_Df1$Sp == "Thekla lark"], "Thekla lark")
+SPLimits[8,] <- c(Lambdas_Df1$Xmean[Lambdas_Df1$Sp == "Tawny pipit"], Lambdas_Df1$YQuant975[Lambdas_Df1$Sp == "Tawny pipit"], "Tawny pipit")
+SPLimits[9,] <- c(Lambdas_Df1$XQuant975[Lambdas_Df1$Sp == "Rock sparrow"], Lambdas_Df1$Ymean[Lambdas_Df1$Sp == "Rock sparrow"], "Rock sparrow")
+SPLimits[10,] <- c(Lambdas_Df1$XQuant975[Lambdas_Df1$Sp == "Northern wheatear"], Lambdas_Df1$Ymean[Lambdas_Df1$Sp == "Northern wheatear"], "Northern wheatear")
+SPLimits[11,] <- c(Lambdas_Df1$Xmean[Lambdas_Df1$Sp == "Common stonechat"], Lambdas_Df1$YQuant975[Lambdas_Df1$Sp == "Common stonechat"], "Common stonechat")
+
+SPLimits <- data.frame(SPLimits)
+colnames(SPLimits) <- c("X", "Y", "Sp")
+SPLimits$X <- as.numeric(SPLimits$X)
+SPLimits$Y <- as.numeric(SPLimits$Y)
+SPLimits$Sp <- as.factor(SPLimits$Sp)
+
+GraphNull <- ggplot(data= Lambdas_Df1, aes(x= Xmean, y= Ymean, colour= Sp)) +
+  geom_errorbar(data= Lambdas_Df1, aes(ymin= YQuant025, ymax= YQuant975, colour= Sp), size= 10, alpha= 0.5, position=position_dodge(width= 30)) + # position=position_dodge(width=0.75),
+  geom_linerange(data= Lambdas_Df1, aes(xmin= XQuant025, xmax= XQuant975, colour= Sp), size= 10, alpha= 0.5) + # position=position_dodge(width=0.75), 
+  xlab("Latent variable 1")+
+  ylab("Latent variable 2") + 
+  geom_text_repel(data= SPLimits, # geom_label_repel
+                   aes(label= Sp, x= X, y= Y),
+                   fontface= 'bold',
+                   label.padding = unit(1.5, "lines"), # Rectangle size around label
+             box.padding = 4,
+             force= 1,
+             size= 25,
+             label.size= 2.5,
+            point.padding = 2,
+            segment.color = 'grey50',
+            arrow = arrow(length = unit(0.01, 'npc')),
+            segment.size = 3,
+            nudge_y = ifelse(SPLimits$Y > 0, 0.23, -0.22),
+            color = "black",
+             max.overlaps = Inf,) +
+  scale_color_manual(values = c("turquoise4","salmon3", "yellow4", "forestgreen", "purple1", "orange1", "black", "lightskyblue", "ivory4", "brown2","azure4")) + theme_bw() + 
+  theme(plot.margin = margin(t= 15, r= 15, b= 15, l= 15),
+        panel.border = element_rect(size= 3),
+        strip.text.x = element_text(size = 40, face = "bold"), 
+        strip.text.y = element_text(size = 40, face = "bold"), 
+        legend.position="none", 
+        legend.title = element_blank(), 
+        axis.ticks.x = element_line(),
+        axis.ticks.y = element_line(),
+        axis.ticks.length = unit(30, "pt"),
+        axis.text.x=element_text(size=80, family= "serif", color= "black", margin= margin(t= 30, r=0, b=0, l=0)), 
+        axis.text.y=element_text(size=80, family= "serif", color= "black", margin= margin(t= 0, r=30, b=0, l=0)),
+        axis.line = element_line(size= 2),
+        axis.title.y = element_text(size = 90,  family= "serif", margin = margin(t = 0, r = 25, b = 0, l = 0)),
+        axis.title.x = element_text(size = 90,  family= "serif", margin = margin(t = 25, r = 0, b = 0, l = 0)))
+
+GraphNull
+
+theme0 <- function(...) theme( legend.position = "none",
+                               panel.background = element_blank(),
+                               panel.grid.major = element_blank(),
+                               panel.grid.minor = element_blank(),
+                               panel.margin = unit(0,"null"),
+                               axis.ticks = element_blank(),
+                               axis.text.x = element_blank(),
+                               axis.text.y = element_blank(),
+                               axis.title.x = element_blank(),
+                               axis.title.y = element_blank(),
+                               axis.ticks.length = unit(0,"null"),
+                               axis.ticks.margin = unit(0,"null"),
+                               panel.border=element_rect(color=NA),...)
+
+p2 <- ggplot(Lambdas_Df2,aes(x=X, colour=factor(Sp),fill=factor(Sp))) + 
+  geom_density(alpha=0.5) +
+  scale_color_manual(values = c("turquoise4","salmon3", "yellow4", "forestgreen", "purple1", "orange1", "black", "lightskyblue", "ivory4", "brown2","azure4")) + scale_fill_manual(values = c("turquoise4","salmon3", "yellow4", "forestgreen", "purple1", "orange1", "black", "lightskyblue", "ivory4", "brown2","azure4")) +
+  theme_bw() + theme0()
+  
+p3 <- ggplot(Lambdas_Df2,aes(x=Y,colour=factor(Sp),fill=factor(Sp))) + 
+  geom_density(alpha=0.5) + 
+  coord_flip()  + 
+  scale_color_manual(values = c("turquoise4","salmon3", "yellow4", "forestgreen", "purple1", "orange1", "black", "lightskyblue", "ivory4", "brown2","azure4")) + scale_fill_manual(values = c("turquoise4","salmon3", "yellow4", "forestgreen", "purple1", "orange1", "black", "lightskyblue", "ivory4", "brown2","azure4")) +
+  theme_bw() + theme0()
+
+
+blankPlot <- ggplot()+geom_blank(aes(1,1))+
+  theme(plot.background = element_blank(), 
+   panel.grid.major = element_blank(),
+   panel.grid.minor = element_blank(), 
+   panel.border = element_blank(),
+   panel.background = element_blank(),
+   axis.title.x = element_blank(),
+   axis.title.y = element_blank(),
+   axis.text.x = element_blank(), 
+   axis.text.y = element_blank(),
+   axis.ticks = element_blank()
+     )
+
+grid.arrange(p2, blankPlot, GraphNull, p3, 
+        ncol=2, nrow=2, widths=c(4, 1.4), heights=c(1.4, 4))
+
+grid.arrange(arrangeGrob(p2,ncol=2,widths=c(3,1)),
+             arrangeGrob(GraphNull,p3,ncol=2,widths=c(3,1)),
+             heights=c(1,3))
+
+```
+
+With which variables are the latent variables correlated?
+```{r}
+length(post$Lambda[[2]][1,1])
+
+
+```
+
+
+
+
+Now we do the same but for the Full model:
+```{r}
+load(file = "models202104/models_20210331/model_pa_chains_2_samples_100_thin_10.dat")
+full.model <- m
+post= poolMcmcChains(full.model$postList)
+Lambda1 <- matrix(NA, nrow= 3, ncol= 11) # Latent variable 1
+Lambda2 <- matrix(NA, nrow= 3, ncol= 11) # Latent variable 2
+
+for(i in 1:length(full.model$spNames)){
+  for(j in 1:2){
+  getvalue = function(p){return(p$Lambda[[2]][j,i])}
+  if(j== 1){
+    Lambda1[1,i] <- mean(unlist(lapply(X = post, FUN = getvalue)))
+    Lambda1[2,i] <- as.numeric(quantile(unlist(lapply(X = post, FUN = getvalue)), probs= 0.025))
+    Lambda1[3,i] <- as.numeric(quantile(unlist(lapply(X = post, FUN = getvalue)), probs= 0.975))
+  }
+  if(j== 2){
+    Lambda2[1,i] <- mean(unlist(lapply(X = post, FUN = getvalue)))
+    Lambda2[2,i] <- as.numeric(quantile(unlist(lapply(X = post, FUN = getvalue)), 0.025))
+    Lambda2[3,i] <- as.numeric(quantile(unlist(lapply(X = post, FUN = getvalue)), 0.975))
+  }
+  }
+}
+
+Lambda1 <- data.frame(t(Lambda1))
+Lambda2 <- data.frame(t(Lambda2))
+Lambdas_Df1 <- cbind(Lambda1,Lambda2)
+
+colnames(Lambdas_Df1) <- c("Xmean", "XQuant025", "XQuant975", "Ymean", "YQuant025", "YQuant975")
+spNames= c("Dupont's lark", "Common skylark", "Greater short-toed lark", "Tawny pipit", "Black-eared wheatear", "Northern wheatear", "Thekla lark", "Calandra lark", "Woodlark", "Rock sparrow", "Common stonechat")
+row.names(Lambdas_Df1) <- spNames
+Lambdas_Df1
+Lambdas_Df1$Sp <- spNames
+```
+
+We prepare also the data with all the posterior distributions:
+```{r}
+post= poolMcmcChains(full.model$postList)
+Lambda1 <- matrix(NA, nrow= 200, ncol= 11) # Latent variable 1
+Lambda2 <- matrix(NA, nrow= 200, ncol= 11) # Latent variable 2
+
+for(i in 1:length(full.model$spNames)){
+  for(j in 1:2){
+  getvalue = function(p){return(p$Lambda[[2]][j,i])}
+  if(j== 1){
+    Lambda1[,i] <- unlist(lapply(X = post, FUN = getvalue))
+  }
+  if(j== 2){
+    Lambda2[,i] <- unlist(lapply(X = post, FUN = getvalue))
+  }
+  }
+}
+
+Lambda1 <- data.frame(Lambda1)
+spNames= c("Dupont's lark", "Common skylark", "Greater short-toed lark", "Tawny pipit", "Black-eared wheatear", "Northern wheatear", "Thekla lark", "Calandra lark", "Woodlark", "Rock sparrow", "Common stonechat")
+colnames(Lambda1) <- spNames
+Lambda <- c(Lambda1$`Dupont's lark`, Lambda1$`Common skylark`, Lambda1$`Greater short-toed lark`, Lambda1$`Tawny pipit`, Lambda1$`Black-eared wheatear`,
+                 Lambda1$`Northern wheatear`, Lambda1$`Thekla lark`, Lambda1$`Calandra lark`, Lambda1$`Woodlark`, Lambda1$`Rock sparrow`, Lambda1$`Common stonechat`)
+
+Lambda1 <- matrix(NA, ncol= 2, nrow= 200*11)
+Lambda1[,1] <- Lambda
+Lambda1[,2] <- rep(spNames, each= 200)
+Lambda1 <- data.frame(Lambda1)
+colnames(Lambda1) <- c("X", "Sp")
+
+Lambda2 <- data.frame(Lambda2)
+colnames(Lambda2) <- spNames
+Lambda <- c(Lambda2$`Dupont's lark`, Lambda2$`Common skylark`, Lambda2$`Greater short-toed lark`, Lambda2$`Tawny pipit`, Lambda2$`Black-eared wheatear`,
+                 Lambda2$`Northern wheatear`, Lambda2$`Thekla lark`, Lambda2$`Calandra lark`, Lambda2$`Woodlark`, Lambda2$`Rock sparrow`, Lambda2$`Common stonechat`)
+Lambda2 <- matrix(NA, ncol= 1, nrow= 200*11)
+Lambda2[,1] <- Lambda
+Lambda2 <- data.frame(Lambda2)
+colnames(Lambda2) <- c("Y")
+
+Lambdas_Df2 <- cbind(Lambda1, Lambda2)
+str(Lambdas_Df2)
+Lambdas_Df2$Sp <- as.factor(Lambdas_Df2$Sp)
+Lambdas_Df2$X <- as.numeric(Lambdas_Df2$X)
+```
+
+Full model plot:
+```{r, fig.height= 40, fig.width= 40}
+etaPost.full <- getPostEstimate(full.model, "Eta", thin= 10)
+lambdaPost.full <- getPostEstimate(full.model, "Lambda", r=2, thin= 10)
+plotorder.full <- 1:nrow(full.model$XData)
+factors.full <- c(1,2)
+
+SPLimits <- matrix(NA, ncol= 3, nrow= 11)
+SPLimits[1,] <- c(Lambdas_Df1$Xmean[Lambdas_Df1$Sp == "Dupont's lark"], Lambdas_Df1$YQuant975[Lambdas_Df1$Sp == "Dupont's lark"], "Dupont's lark")
+SPLimits[2,] <- c(Lambdas_Df1$Xmean[Lambdas_Df1$Sp == "Common skylark"], Lambdas_Df1$YQuant025[Lambdas_Df1$Sp == "Common skylark"], "Common skylark")
+SPLimits[3,] <- c(Lambdas_Df1$Xmean[Lambdas_Df1$Sp == "Woodlark"], Lambdas_Df1$YQuant025[Lambdas_Df1$Sp == "Woodlark"], "Woodlark")
+SPLimits[4,] <- c(Lambdas_Df1$Xmean[Lambdas_Df1$Sp == "Calandra lark"], Lambdas_Df1$YQuant025[Lambdas_Df1$Sp == "Calandra lark"], "Calandra lark")
+SPLimits[5,] <- c(Lambdas_Df1$Xmean[Lambdas_Df1$Sp == "Black-eared wheatear"], Lambdas_Df1$YQuant975[Lambdas_Df1$Sp == "Black-eared wheatear"], "Black-eared wheatear")
+SPLimits[6,] <- c(Lambdas_Df1$XQuant025[Lambdas_Df1$Sp == "Greater short-toed lark"], Lambdas_Df1$Ymean[Lambdas_Df1$Sp == "Greater short-toed lark"], "Greater short-toed lark")
+SPLimits[7,] <- c(Lambdas_Df1$Xmean[Lambdas_Df1$Sp == "Thekla lark"], Lambdas_Df1$YQuant975[Lambdas_Df1$Sp == "Thekla lark"], "Thekla lark")
+SPLimits[8,] <- c(Lambdas_Df1$Xmean[Lambdas_Df1$Sp == "Tawny pipit"], Lambdas_Df1$YQuant975[Lambdas_Df1$Sp == "Tawny pipit"], "Tawny pipit")
+SPLimits[9,] <- c(Lambdas_Df1$Xmean[Lambdas_Df1$Sp == "Rock sparrow"], Lambdas_Df1$YQuant025[Lambdas_Df1$Sp == "Rock sparrow"], "Rock sparrow")
+SPLimits[10,] <- c(Lambdas_Df1$Xmean[Lambdas_Df1$Sp == "Northern wheatear"], Lambdas_Df1$YQuant025[Lambdas_Df1$Sp == "Northern wheatear"], "Northern wheatear")
+SPLimits[11,] <- c(Lambdas_Df1$XQuant975[Lambdas_Df1$Sp == "Common stonechat"], Lambdas_Df1$Ymean[Lambdas_Df1$Sp == "Common stonechat"], "Common stonechat")
+
+SPLimits <- data.frame(SPLimits)
+colnames(SPLimits) <- c("X", "Y", "Sp")
+SPLimits$X <- as.numeric(SPLimits$X)
+SPLimits$Y <- as.numeric(SPLimits$Y)
+SPLimits$Sp <- as.factor(SPLimits$Sp)
+
+GraphFull <- ggplot(data= Lambdas_Df1, aes(x= Xmean, y= Ymean, colour= Sp)) +
+  geom_errorbar(data= Lambdas_Df1, aes(ymin= YQuant025, ymax= YQuant975, colour= Sp), size= 10, alpha= 0.5, position=position_dodge(width= 3)) + # position=position_dodge(width=0.75),
+  geom_linerange(data= Lambdas_Df1, aes(xmin= XQuant025, xmax= XQuant975, colour= Sp), size= 10, alpha= 0.5) + # position=position_dodge(width=0.75), 
+  xlab("Latent variable 1")+
+  ylab("Latent variable 2") + 
+      geom_label_repel(data= SPLimits,
+                   aes(label= Sp, x= X, y= Y),
+                   fontface= 'bold',
+                   label.padding = unit(1.5, "lines"), # Rectangle size around label
+             box.padding = 4,
+             force= 1,
+             size= 25,
+             label.size= 2.5,
+            point.padding = 2,
+            segment.color = 'grey50',
+            arrow = arrow(length = unit(0.01, 'npc')),
+            segment.size = 3,
+            nudge_y = ifelse(SPLimits$Y > 0, 0.23, -0.22),
+            color = "black") +
+  scale_color_manual(values = c("turquoise4","salmon3", "yellow4", "forestgreen", "purple1", "orange1", "black", "lightskyblue", "ivory4", "brown2","azure4")) + theme_bw() + 
+  theme(plot.margin = margin(t= 15, r= 20, b= 15, l= 15),
+        panel.border = element_rect(size= 3),
+        strip.text.x = element_text(size = 40, face = "bold"), 
+        strip.text.y = element_text(size = 40, face = "bold"), 
+        legend.position="none", 
+        legend.title = element_blank(), 
+        axis.ticks.x = element_line(),
+        axis.ticks.y = element_line(),
+        axis.ticks.length = unit(30, "pt"),
+        axis.text.x=element_text(size=80, family= "serif", color= "black", margin= margin(t= 30, r=0, b=0, l=0)), 
+        axis.text.y=element_text(size=80, family= "serif", color= "black", margin= margin(t= 0, r=30, b=0, l=0)),
+        axis.line = element_line(size= 2),
+        axis.title.y = element_text(size = 90,  family= "serif", margin = margin(t = 0, r = 25, b = 0, l = 0)),
+        axis.title.x = element_text(size = 90,  family= "serif", margin = margin(t = 25, r = 0, b = 0, l = 0)))
+
+GraphFull
+
+p2.full <- ggplot(Lambdas_Df2,aes(x=X, colour=factor(Sp),fill=factor(Sp))) + 
+  geom_density(alpha=0.5) +
+  scale_x_continuous(breaks=NULL,expand=c(0.02,0)) +
+  scale_y_continuous(breaks=NULL,expand=c(0.02,0)) +
+  scale_color_manual(values = c("turquoise4","salmon3", "yellow4", "forestgreen", "purple1", "orange1", "black", "lightskyblue", "ivory4", "brown2","azure4")) + scale_fill_manual(values = c("turquoise4","salmon3", "yellow4", "forestgreen", "purple1", "orange1", "black", "lightskyblue", "ivory4", "brown2","azure4")) +
+  theme_bw() +
+  theme0(plot.margin = unit(c(1,0,0,2.2),"lines")) 
+  
+p3.full <- ggplot(Lambdas_Df2,aes(x=Y,colour=factor(Sp),fill=factor(Sp))) + 
+  geom_density(alpha=0.5) + 
+  coord_flip()  + 
+  scale_x_continuous(labels = NULL,breaks=NULL,expand=c(0.02,0)) +
+  scale_y_continuous(labels = NULL,breaks=NULL,expand=c(0.02,0)) +
+  scale_color_manual(values = c("turquoise4","salmon3", "yellow4", "forestgreen", "purple1", "orange1", "black", "lightskyblue", "ivory4", "brown2","azure4")) + scale_fill_manual(values = c("turquoise4","salmon3", "yellow4", "forestgreen", "purple1", "orange1", "black", "lightskyblue", "ivory4", "brown2","azure4")) +
+  theme_bw() +
+  theme0(plot.margin = unit(c(0,1,1.2,0),"lines"))
+
+grid.arrange(arrangeGrob(p2.full,ncol=2,widths=c(3,1)),
+             arrangeGrob(GraphFull,p3.full,ncol=2,widths=c(3,1)),
+             heights=c(1,3))
+
+```
+
+All together:
+```{r fig.height= 40, fig.width= 80}
+ggdraw() +
+  draw_plot(GraphNull, x = 0, y = 0, width = .5, height = 1) +
+  draw_plot(GraphFull, x = .5, y = 0, width = .5, height = 1) +
+  draw_plot_label(label = c("A", "B"), size = 100,
+                  x = c(0.06, 0.56), y = c(0.98, 0.98))
+```
+
+
+Below we present previous tries:
+The same with the whole psoterior distribution and stat_ellipse
+
+Null model plot:
+```{r, fig.height= 20}
+etaPost.null <- getPostEstimate(null.model, "Eta", thin= 10)
+lambdaPost.null <- getPostEstimate(null.model, "Lambda", r=2, thin= 10)
+plotorder.null <- 1:nrow(null.model$XData)
+factors.null <- c(1,2)
+
+scale1 = abs(c(min(etaPost.null$mean[,factors.null[1]]),max(etaPost.null$mean[,factors.null[1]])))
+scale2 = abs(c(min(etaPost.null$mean[,factors.null[2]]),max(etaPost.null$mean[,factors.null[2]])))
+scale1 = min(scale1/abs(c(min(lambdaPost.null$mean[factors.null[1],]),max(lambdaPost.null$mean[factors.null[1],]))))
+scale2 = min(scale2/abs(c(min(lambdaPost.null$mean[factors.null[2],]),max(lambdaPost.null$mean[factors.null[2],]))))
+scale.null <- min(scale1, scale2)
+
+GraphNull <- ggplot(data= Lambdas_Df2, aes(x= X, y= Y, color= Sp)) +
+  geom_point(alpha= 0.3, size= 6) +
+  #geom_mark_ellipse(expand= 0, aes(fill= Sp, group= Sp, label= Sp)) +
+  stat_ellipse(aes(fill= Sp), geom= "polygon", type= "norm", level= 0.75, alpha= 0.2, size= 1.5) +
+  #geom_density2d() +
+  #geom_density2d(contour = TRUE)+
+  xlab("Latent variable 1") +
+  ylab("Latent variable 2") +
+  theme_bw() +  
+  theme(strip.text.x = element_text(size = 30, face = "bold"), 
+        strip.text.y = element_text(size = 30, face = "bold"), 
+        legend.position="none", 
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 13),
+        axis.text.x=element_text(size=35, family= "serif", color= "black"), 
+        axis.text.y=element_text(size=35, family= "serif"),
+        axis.line = element_line(colour = "black", size= 1),
+        axis.title.y = element_text(size = 45,  family= "serif", margin = margin(t = 0, r = 25, b = 0, l = 0)),
+        axis.title.x = element_text(size = 45,  family= "serif", margin = margin(t = 25, r = 0, b = 0, l = 0)))
+
+GraphNull <- GraphNull + 
+  geom_point(data= Lambdas_Df1, aes(x= Xmean, y= Ymean, fill= Sp), colour= "black", shape= 24, size= 10, stroke= 2) +
+  geom_text_repel(data= Lambdas_Df1, aes(x= Xmean, y= Ymean, label= Sp), # Alternativa geom_label_repel con caja
+                   label.padding = unit(0.55, "lines"), # Rectangle size around label
+                   box.padding = 5,
+                   size= 15,
+                   # label.size= 0.25,
+                   point.padding = ,
+                   max.overlaps = Inf,
+                   color = "black")
+             
+
+GraphNull
+```
+
+
+
+
+
+Null mode:
+```{r, fig.height= 7}
+spNames= c("Dupont's lark", "Common skylark", "Greater short-toed lark", "Tawny pipit", "Black-eared wheatear", "Northern wheatear", "Thekla lark", "Calandra lark", "Woodlark", "Rock sparrow", "Common stonechat")
+# cex= to increase potin size
+biPlot(null.model, etaPost = getPostEstimate(null.model, "Eta"), lambdaPost = getPostEstimate(null.model, "Lambda", r=2))
+
+# With ggplot2
+etaPost.null <- getPostEstimate(null.model, "Eta", thin= 10)
+lambdaPost.null <- getPostEstimate(null.model, "Lambda", r=2, thin= 10)
+plotorder.null <- 1:nrow(null.model$XData)
+factors.null <- c(1,2)
+
+scale1 = abs(c(min(etaPost.null$mean[,factors.null[1]]),max(etaPost.null$mean[,factors.null[1]])))
+scale2 = abs(c(min(etaPost.null$mean[,factors.null[2]]),max(etaPost.null$mean[,factors.null[2]])))
+scale1 = min(scale1/abs(c(min(lambdaPost.null$mean[factors.null[1],]),max(lambdaPost.null$mean[factors.null[1],]))))
+scale2 = min(scale2/abs(c(min(lambdaPost.null$mean[factors.null[2],]),max(lambdaPost.null$mean[factors.null[2],]))))
+scale.null <- min(scale1, scale2)
+
+GraphNull <- ggplot() + 
+  geom_point(aes(x= etaPost.null$mean[,factors.null[1]][plotorder.null], y= etaPost.null$mean[,factors.null[2]][plotorder.null]), alpha= 0.1) +
+  geom_point(aes(x= scale.null*lambdaPost.null$mean[factors.null[1],], y= scale.null*lambdaPost.null$mean[factors.null[2],]), shape= 17, size= 3) +
+  geom_label_repel(aes(label= spNames,
+             x= scale.null*lambdaPost.null$mean[factors.null[1],],
+             y= scale.null*lambdaPost.null$mean[factors.null[2],]),
+             label.padding = unit(0.55, "lines"), # Rectangle size around label
+             box.padding = 0.35,
+             size= 5,
+             label.size= 0.25,
+            point.padding = 0.25,
+            nudge_x= 0.1,
+            nudge_y = 0.1,
+            color = "black") +
+  xlab("Latent variable 1") + 
+  ylab("Latent variable 2") +
+  #xlim(c(-0.75,0.75)) +
+  #ylim(c(-0.25,0.25)) +
+  theme_bw() + 
+  theme(axis.text.x = element_text(size = 11),
+        axis.text.y = element_text(size = 11),
+        axis.title.x = element_text(size = 15, margin = margin(t = 5, r = 0, b = 0, l = 0)),
+        axis.title.y = element_text(size = 15, margin = margin(t = 0, r = 5, b = 0, l = 0)), axis.text = element_text(family = "Times",size= 16)) 
+
+GraphNull
+```
+
+
+Full model:
+```{r, fig.height= 7}
+biPlot(full.model, etaPost = getPostEstimate(full.model, "Eta"), lambdaPost = getPostEstimate(full.model, "Lambda", r=2))
+
+etaPost.full <- getPostEstimate(full.model, "Eta")
+lambdaPost.full <- getPostEstimate(full.model, "Lambda", r= 2)
+plotorder.full <- 1:nrow(full.model$XData)
+factors.full <- c(1, 2)
+
+scale1 = abs(c(min(etaPost.full$mean[,factors.full[1]]),max(etaPost.full$mean[,factors.full[1]])))
+scale2 = abs(c(min(etaPost.full$mean[,factors.full[2]]),max(etaPost.full$mean[,factors.full[2]])))
+scale1 = min(scale1/abs(c(min(lambdaPost.full$mean[factors.full[1],]),max(lambdaPost.full$mean[factors.full[1],]))))
+scale2 = min(scale2/abs(c(min(lambdaPost.full$mean[factors.full[2],]),max(lambdaPost.full$mean[factors.full[2],]))))
+scale.full <- min(scale1, scale2)
+
+GraphFull <- ggplot() + 
+  geom_point(aes(x= etaPost.full$mean[,factors.full[1]][plotorder.full], y= etaPost.full$mean[,factors.full[2]][plotorder.full]), alpha= 0.1) +
+  geom_point(aes(x= scale.full*lambdaPost.full$mean[factors.full[1],], y= scale.full*lambdaPost.full$mean[factors.full[2],]), shape= 17, size= 3) +
+  geom_label_repel(aes(label= spNames,
+             x= scale.full*lambdaPost.full$mean[factors.full[1],],
+             y= scale.full*lambdaPost.full$mean[factors.full[2],]),
+             label.padding = unit(0.55, "lines"), # Rectangle size around label
+             box.padding = 0.35,
+             size= 5,
+            point.padding = 0.5,
+            color = "black") +
+  xlab("Latent variable 1") + 
+  ylab("Latent variable 2") +
+  xlim(c(-0.75,0.75)) +
+  ylim(c(-0.25,0.25)) +
+  theme_bw() + 
+  theme(axis.text.x = element_text(size = 11),
+        axis.text.y = element_text(size = 11),
+        axis.title.x = element_text(size = 15, margin = margin(t = 5, r = 0, b = 0, l = 0)),
+        axis.title.y = element_text(size = 15, margin = margin(t = 0, r = 5, b = 0, l = 0)), axis.text = element_text(family = "Times",size= 16)) 
+
+  
+```
+
+Both graphs together:
+```{r, fig.width= 15, fig.height=7}
+library(cowplot)
+ggdraw() +
+  draw_plot(GraphNull, x = 0, y = 0, width = .5, height = 1) +
+  draw_plot(GraphFull, x = .5, y = 0, width = .5, height = 1) +
+  draw_plot_label(label = c("A", "B"), size = 18,
+                  x = c(0.05, 0.55), y = c(0.98, 0.98))
+```
+
+We plot the graphs again but this time we change the axis:
+
+```{r, fig.width= 15, fig.height=7}
+GraphNull <- ggplot() + 
+  geom_point(aes(x= etaPost.null$mean[,factors.null[2]][plotorder.null], y= etaPost.null$mean[,factors.null[1]][plotorder.null]), alpha= 0.1) +
+  geom_point(aes(x= scale.null*lambdaPost.null$mean[factors.null[2],], y= scale.null*lambdaPost$mean[factors.null[1],]), shape= 17, size= 3) +
+  geom_label_repel(aes(label= spNames,
+             x= scale.null*lambdaPost.null$mean[factors.null[2],],
+             y= scale.null*lambdaPost.null$mean[factors.null[1],]),
+             label.padding = unit(0.55, "lines"), # Rectangle size around label
+             box.padding = 0.35,
+             size= 5,
+             label.size= 0.25,
+            point.padding = 0.5,
+            color = "black") +
+  ylab("Latent variable 1") + 
+  xlab("Latent variable 2") +
+  ylim(c(-0.75,0.75)) +
+  xlim(c(-0.25,0.25)) +
+  theme_bw() + 
+  theme(axis.text.x = element_text(size = 11),
+        axis.text.y = element_text(size = 11),
+        axis.title.x = element_text(size = 15, margin = margin(t = 5, r = 0, b = 0, l = 0)),
+        axis.title.y = element_text(size = 15, margin = margin(t = 0, r = 5, b = 0, l = 0)), axis.text = element_text(family = "Times",size= 16))
+
+
+GraphFull <- ggplot() + 
+  geom_point(aes(x= etaPost.full$mean[,factors.full[2]][plotorder.full], y= etaPost.full$mean[,factors.full[1]][plotorder.full]), alpha= 0.1) +
+  geom_point(aes(x= scale.full*lambdaPost.full$mean[factors.full[2],], y= scale.full*lambdaPost.full$mean[factors.full[1],]), shape= 17, size= 3) +
+  geom_label_repel(aes(label= spNames,
+             x= scale.full*lambdaPost.full$mean[factors.full[2],],
+             y= scale.full*lambdaPost.full$mean[factors.full[1],]),
+             label.padding = unit(0.55, "lines"), # Rectangle size around label
+             box.padding = 0.35,
+             size= 5,
+            point.padding = 0.5,
+            color = "black") +
+  ylab("Latent variable 1") + 
+  xlab("Latent variable 2") +
+  ylim(c(-0.75,0.75)) +
+  xlim(c(-0.25,0.25)) +
+  theme_bw() + 
+  theme(axis.text.x = element_text(size = 11),
+        axis.text.y = element_text(size = 11),
+        axis.title.x = element_text(size = 15, margin = margin(t = 5, r = 0, b = 0, l = 0)),
+        axis.title.y = element_text(size = 15, margin = margin(t = 0, r = 5, b = 0, l = 0)), axis.text = element_text(family = "Times",size= 16)) 
+
+library(cowplot)
+ggdraw() +
+  draw_plot(GraphNull, x = 0, y = 0, width = .5, height = 1) +
+  draw_plot(GraphFull, x = .5, y = 0, width = .5, height = 1) +
+  draw_plot_label(label = c("A", "B"), size = 18,
+                  x = c(0.05, 0.55), y = c(0.98, 0.98))
+```
+
+
+**Variance partitioning**
+
+Out of the total variance explained, which part is explained by each variable.
+
+To do so, we first need to look at the so-called design matrix 𝐗 that HMSC-R has constructed from XData and XFormula.
+
+```{r}
+round(head(m$X),2)
+```
+
+First column models the intercept, which does not explain any variance, so we can group this
+column arbitrarily e.g. with the year variable.
+
+```{r}
+group=c(1,1,2,3,3,3,3,4,4,4,4,4,4)
+groupnames = c("Interannual variability", "BNDVI", "Biotics features", "Vegetation types")
+VP = computeVariancePartitioning(m, group=group,groupnames = groupnames)
+plotVariancePartitioning(m,VP= VP)
+```
+
+Graph:
+```{r}
+par(mar= c(7.5,2,0.9,10), family= 'serif')
+barplot(VP$vals, las=2, cex.names=0.75, cex.axis=0.75,
+legend.text=paste(colnames(t(VP$vals))," ",
+signif(100*colMeans(t(VP$vals)),2),"%",sep=""),
+args.legend=list(y=1, xjust=0, horiz=F, bty="n",cex=0.75),
+density=c(1000,30,1000,30,1000,30), angle=c(0,45,0,45,0,45), col=c("lightblue2", "steelblue2", "slateblue1", "slateblue1", "slateblue4", "black"))
+```
+
+Queremos que random plot y random grid aparezcan en una sola categoria:
+```{r}
+VPini_trans <- t(VP$vals)
+
+VPmodf_trans <- matrix(NA, nrow= 11, ncol= 5)
+
+for(i in 1:11){
+  for(x in 1:4){
+    VPmodf_trans[i, x] <- VPini_trans[i,x]
+  }
+  VPmodf_trans[i,5] <- VPini_trans[i,5] + VPini_trans[i,6]
+}
+
+colnames(VPmodf_trans) <- c("Interannual variability", "BNDVI", "Biotics features", "Vegetation types", "Spatial random effects")
+rownames(VPmodf_trans) <- c("Dupont's lark", "Common skylark", "Greater short-toed lark", "Tawny pipit", "Black-eared wheatear", "Northern wheatear", "Thekla lark", "Calandra lark", "Woodlark", "Rock sparrow", "Common stonechat")
+
+VPmodf <- t(VPmodf_trans)
+
+```
+
+Graph:
+```{r}
+par(mar= c(10,3,0.9,11), family= 'serif')
+barplot(VPmodf, las=2, cex.names= 1.2, cex.axis= 1,
+legend.text=paste(colnames(VPmodf_trans)," ",
+signif(100*colMeans(VPmodf_trans),2),"%",sep=""),
+args.legend=list(y=1, xjust=0, horiz=F, bty="n",cex= 1),
+density=c(1000,30,1000,30,1000), angle=c(0,45,0,45,0), col=c("lightblue2", "steelblue2", "slateblue1", "slateblue1", "slateblue4"))
+```
+
+Ordenamos las especies por grupos:
+
+```{r}
+VPini_trans <- t(VP$vals)
+VPmodf_trans <- matrix(NA, nrow= 11, ncol= 5)
+
+VPmodf_trans[1, 1:4] <- VPini_trans[1,1:4]
+VPmodf_trans[2, 1:4] <- VPini_trans[2,1:4]
+VPmodf_trans[3, 1:4] <- VPini_trans[6,1:4]
+VPmodf_trans[4, 1:4] <- VPini_trans[7,1:4]
+VPmodf_trans[5, 1:4] <- VPini_trans[5,1:4]
+VPmodf_trans[6, 1:4] <- VPini_trans[9,1:4]
+VPmodf_trans[7, 1:4] <- VPini_trans[4,1:4]
+VPmodf_trans[8, 1:4] <- VPini_trans[10,1:4]
+VPmodf_trans[9, 1:4] <- VPini_trans[11,1:4]
+VPmodf_trans[10, 1:4] <- VPini_trans[8,1:4]
+VPmodf_trans[11, 1:4] <- VPini_trans[3,1:4]
+
+VPmodf_trans[1, 5] <- VPini_trans[1,5] + VPini_trans[1,6]
+VPmodf_trans[2, 5] <- VPini_trans[2,5] + VPini_trans[2,6]
+VPmodf_trans[3, 5] <- VPini_trans[6,5] + VPini_trans[6,6]
+VPmodf_trans[4, 5] <- VPini_trans[7,5] + VPini_trans[7,6]
+VPmodf_trans[5, 5] <- VPini_trans[5,5] + VPini_trans[5,6]
+VPmodf_trans[6, 5] <- VPini_trans[9,5] + VPini_trans[9,6]
+VPmodf_trans[7, 5] <- VPini_trans[4,5] + VPini_trans[4,6]
+VPmodf_trans[8, 5] <- VPini_trans[10,5] + VPini_trans[10,6]
+VPmodf_trans[9, 5] <- VPini_trans[11,5] + VPini_trans[11,6]
+VPmodf_trans[10, 5] <- VPini_trans[8,5] + VPini_trans[8,6]
+VPmodf_trans[11, 5] <- VPini_trans[3,5] + VPini_trans[3,6]
+
+colnames(VPmodf_trans) <- c("Interannual variability", "BNDVI", "Abiotics features", "Vegetation types", "Spatial random effects")
+rownames(VPmodf_trans) <- c("Dupont's lark", "Common skylark", "Northern wheatear", "Thekla lark", "Black-eared wheatear", "Woodlark", "Tawny pipit",  "Rock sparrow", "Common stonechat", "Calandra lark", "Greater short-toed lark")
+
+VPmodf <- t(VPmodf_trans)
+
+```   
+
+Graph:
+```{r}
+par(mar= c(10,3,0.9,11), family= 'serif')
+barplot(VPmodf, las=2, cex.names= 1.2, cex.axis= 1,
+legend.text=paste(colnames(VPmodf_trans)," ",
+signif(100*colMeans(VPmodf_trans),2),"%",sep=""),
+args.legend=list(y=1, xjust=0, horiz=F, bty="n",cex= 1),
+density=c(1000,30,1000,30,1000), angle=c(0,45,0,45,0), col=c("lightblue2", "steelblue2", "slateblue1", "slateblue1", "slateblue4"))
+```
+```{r}
+VP$vals
+```

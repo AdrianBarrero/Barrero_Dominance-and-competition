@@ -1,0 +1,199 @@
+---
+title: "HSMC_NullModel"
+author: "Adrián Barrero"
+date: "25 de enero de 2022"
+output: html_document
+---
+```{r}
+library(BayesLogit)
+library(coda)
+library(Hmsc)
+library(parallel)
+library(corrplot)
+```
+
+```{r}
+setwd("E:/ORDENADOR_UAM_2019/Clasificacion_ArcMap_Arb/1.Data/LastData")
+
+library (readxl)
+Data <- read_excel("Data2.xlsx")
+Grid <- read_excel("Grid.xlsx")
+```
+###Data structure:
+```{r}
+StudyDesign <- data.frame(Plot= as.factor(Data$Plot), Grid= as.factor(Data$Grid), Year= as.factor(Data$Year))
+
+X <- data.frame(Data[,4:15])
+Y <- as.matrix(Data[,16:26]) # 11 Species
+xycoords <- as.matrix(Grid[,3:4]) # XY Coordinates per cell
+colnames(xycoords) = c("x-coordinate","y-coordinate")
+rownames(xycoords) = Grid$Grid
+head(xycoords)
+```
+#Let's transform those variables which distribution is skewed left. This will ease to detect 
+#linear effects:
+```{r}
+X$Shrub <- log(X$Shrub + 1)
+X$BNDVI <- log(X$BNDVI + 1)
+X$Trees <- log(X$Trees + 1)
+X$BareGround <- log(X$BareGround + 1)
+X$Scrub20 <- log(X$Scrub20 + 1)
+X$Walls <- log(X$Walls + 1)
+X$Rocks20 <- log(X$Rocks20 + 1)
+X$Cereal <- log(X$Cereal + 1)
+X$Herbaceus <- log(X$Herbaceus + 1)
+X$Rocks5 <- log(X$Rocks5 + 1)
+X$Scrub5 <- log(X$Scrub5 + 1)
+```
+#Standardise all variables::
+```{r}
+X$Year <- as.factor(X$Year)
+X$Shrub <- as.vector(scale(X$Shrub))
+X$BNDVI <- as.vector(scale(X$BNDVI))
+X$Trees <- as.vector(scale(X$Trees))
+X$BareGround <- as.vector(scale(X$BareGround))
+X$Scrub20 <- as.vector(scale(X$Scrub20))
+X$Walls <- as.vector(scale(X$Walls))
+X$Rocks20 <- as.vector(scale(X$Rocks20))
+X$Cereal <- as.vector(scale(X$Cereal))
+X$Herbaceus <- as.vector(scale(X$Herbaceus))
+X$Rocks5 <- as.vector(scale(X$Rocks5))
+X$Scrub5 <- as.vector(scale(X$Scrub5))
+```
+#### Fitting the model
+```{r}
+Ypois <- Y
+Yprobit <- ifelse (Ypois > 0, 1, 0) # no use to pisson distribution
+#con esa estructura estamos diciendo que me convierta los valores de abundancia en 1 y 0.
+```
+
+# We describe the random effects
+```{r}
+# rL.Year = HmscRandomLevel(units= levels(StudyDesign$Year)) # Year
+rL.plot = HmscRandomLevel(units= levels(StudyDesign$Plot)) # Plot
+# rL.Grid = HmscRandomLevel(units= levels(StudyDesign$Grid)) # Grid
+rL.nngp = HmscRandomLevel(sData = xycoords, sMethod = 'NNGP', nNeighbours = 10) # XY coordinates (grid)
+```
+# We describe the structure of the fixes effects
+
+```{r}
+## Null model
+XFormula.null = ~1
+```
+##### we adjust Script
+```{r}
+m = Hmsc(Y= Yprobit, XData= X, XFormula= XFormula, studyDesign= StudyDesign, ranLevels= list("Grid"= rL.nngp, "Plot"= rL.plot), distr= "probit")
+
+setwd("C:/Users/AB.5047919/Desktop/AA")
+localDir = "."
+model.directory = file.path(localDir, "Models_Null")
+```
+
+#Only first time
+```{r}
+nChains = 2
+samples = 100
+for (thin in c(10,100)){
+  transient = 50*thin
+  
+  m = sampleMcmc(m, thin = thin, samples = samples, transient = transient, nChains = nChains, updater=list(GammaEta=FALSE))
+  filename=file.path(model.directory, paste0("model_pa_chains_",as.character(nChains),"_samples_",as.character(samples),"_thin_",as.character(thin)))
+  save(m, file=filename)
+    }
+```
+
+##Load to see differences.
+
+#Thin 10
+```{r}
+
+```
+#Thin 100_null_Estandarized
+```{r}
+#Thin 100/smples250/pachains4/O2
+load(file = "E:/ORDENADOR_UAM_2019/Clasificacion_ArcMap_Arb/1.Data/LastData/ModelsO2_21092021/NullModel_pa_chains_4_samples_250_thin_100")
+
+mpost.null = convertToCodaObject(m) # Convert to CODA object
+plot(mpost.null$Beta[,3])
+
+```
+
+```{r}
+ess.beta = effectiveSize(mpost.null$Beta)
+hist(ess.beta, xlab = expression("Effective sample size" ~ beta ~ ""))
+ess.V = effectiveSize(mpost$V)
+hist(ess.V, xlab = "Effective sample size V")
+```
+#Gelman diagnostic
+```{r}
+psrf.beta = gelman.diag(mpost.null$Beta,multivariate=FALSE)$psrf
+hist(psrf.beta, xlab = expression("Potential scale reduction factor" ~ beta ~ ""))
+psrf.V = gelman.diag(mpost$V,multivariate=FALSE)$psrf
+hist(psrf.V, xlab = "Potential scale reduction factor V")
+```
+# Explanatory power
+```{r}
+preds = computePredictedValues(m, updater= list(GammaEta=FALSE))
+MF.nngp = evaluateModelFit(hM= m, predY= preds)
+MF.nngp
+```
+```{r}
+names(Data[16:26])
+```
+#predictive power
+```{r}
+partition = createPartition(m, nfolds = 2, column = "Grid")
+cvpreds.nngp = computePredictedValues(m, partition=partition,updater=list(GammaEta=FALSE))
+cvMF.nngp = evaluateModelFit(hM= m, predY= cvpreds.nngp)
+cvMF.nngp
+```
+
+## Pred porw without partition
+```{r}
+partition = createPartition(m, nfolds = 2, column = "Grid")
+cvpreds.nngp = computePredictedValues(m, partition=partition)
+cvMF.nngp = evaluateModelFit(hM= m, predY= cvpreds.nngp,updater=list(GammaEta=FALSE))
+sum(cvMF.nngp$TjurR2)
+```
+## Model Parameters
+```{r}
+summary(mpost$Beta)
+```
+##plot beta para plotear las relaciones anteriores
+```{r}
+postbeta = getPostEstimate(m, parName="Beta")
+plotBeta(m, post = postbeta)
+```
+## SPECIES-TO-SPECIES ASSOCIATIONS
+##plot
+```{r}
+OmegaCor = computeAssociations(m)
+supportLevel = 0.95
+toPlot = ((OmegaCor[[2]]$support>supportLevel)
+          + (OmegaCor[[2]]$support<(1-supportLevel))>0)*OmegaCor[[2]]$mean
+
+corrplot(toPlot, method = "color",
+         col = colorRampPalette(c("blue","white","red"))(200),
+         title = paste("random effect level:", m$rLNames[2]), mar=c(0,0,1,0))
+```
+##### Nuevo Plot Species associations at the Plot level model Null
+```{r, fig.width= 10}
+par(mar=c(0,0,0,0), family= 'serif')
+
+spNames= c("Dupont's lark", "Common skylark", "Greater short-toed lark", "Tawny pipit", "Black-eared wheatear", "Northern wheatear", "Thekla lark", "Calandra lark", "Woodlark", "Rock sparrow", "Common stonechat")
+m$spNames <- spNames
+
+OmegaCor = computeAssociations(m)
+supportLevel = 0.95
+toPlot = ((OmegaCor[[2]]$support>supportLevel)
+          + (OmegaCor[[2]]$support<(1-supportLevel))>0)*OmegaCor[[2]]$mean
+
+corrplot(toPlot, method = "color",
+         col = colorRampPalette(c("lightblue2","white","forestgreen"))(200),
+         #title = paste("        Null Model
+         # Random effect level:", m$rLNames[2]), 
+         mar=c(0,0,1,0),
+         diag= FALSE, tl.cex= 1.5, cl.cex= 1.25, tl.col= "black", cl.ratio= 0.35, cl.length= 5
+         )
+
+```
