@@ -1,5 +1,5 @@
 # Barrero_Dominance-and-competition
-Open scripts and data bases for Proceedings of the Royal Society B: Biological Sciences ( Barrero et al., Dominance and competition drive assemblage configuration in an Iberian steppe bird community).
+Open scripts and data bases for Oikos ( Barrero et al., Dominance and competition drive assemblage configuration in an Iberian steppe bird community).
 
 
 Four documents are provided: The two R Scripts needed to create and fix the models and two .xls files with the data described below.
